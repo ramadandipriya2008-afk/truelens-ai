@@ -1,0 +1,3 @@
+# GenImage data notes
+
+No GenImage images are bundled. Obtain the dataset only from the official project release and review its current terms/license before use. The dataset is organized by generation method/source with real/fake categories (release layout can differ). Before training, run a discovery pass to record exact paths, source/generator groups, duplicate hashes, dimensions and labels. Split by source/generator and content group where possible, not by randomly splitting near-duplicate images. Keep a fixed, untouched source-held-out test split; publish dataset release/version, exact split manifest, seed and license provenance alongside checkpoints. Do not treat a dataset benchmark result as universal real-world accuracy.

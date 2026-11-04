@@ -1,0 +1,18 @@
+{
+  "repository": "https://huggingface.co/cftcimert/cifake-efficientnet-b0",
+  "revision": "2235b7af38d04956416238554080494d84091552",
+  "license": "MIT (as declared in repository model card)",
+  "files": {
+    "model.onnx": "99dd699a130b3eb21dfc0278a3eca6f03761309481f6f75391041e3f9609d97e",
+    "model.onnx.data": "3bb70d2e1841e6308399e5bf7d32b480086c860493ea249749ba5d82b21021a5"
+  },
+  "model_card_claims": {
+    "architecture": "EfficientNet-B0",
+    "input": "float32 NCHW [batch, 3, 224, 224], RGB, ImageNet normalization",
+    "output": "single logit; sigmoid gives probability of REAL",
+    "dataset": "CIFAKE: CIFAR-10 real images and Stable Diffusion v1.4 synthetic images",
+    "reported_accuracy_percent": 97.85,
+    "reported_accuracy_independently_verified": false
+  },
+  "notes": "Hash pins the downloaded ONNX graph and its required external tensor data. CIFAKE and any upstream source dataset licenses are separate from this model-card MIT declaration."
+}

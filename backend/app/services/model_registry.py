@@ -108,3 +108,72 @@ class ImageDetector:
         p_real = 1.0 / (1.0 + np.exp(-np.clip(logit, -80.0, 80.0)))
         p_synthetic = 1.0 - p_real
         return float(p_synthetic), [float(p_synthetic), float(p_real)]
+
+
+class AudioDetector:
+    """Genuine ONNX detector implementing AASIST Audio Anti-Spoofing."""
+    def __init__(self, model_path: str, device: str = "auto"):
+        self.model_path = Path(model_path)
+        self.session = None
+        self.error: str | None = None
+        self.device = "CPUExecutionProvider"
+        self.metadata = {
+            "name": "AASIST",
+            "version": "130e536266b7c537f9a13029e1612a9f392fd1cc827783683b6d1c062a3db5e1",
+            "architecture": "Integrated Spectro-Temporal Graph Attention Network",
+            "class_order": ["spoof", "bonafide"],
+            "dataset": "ASVspoof 2019 Logical Access (LA)",
+            "license": "MIT",
+            "provenance": "https://huggingface.co/SpeechAntiSpoofingBenchmarks/AASIST",
+            "input": "mono raw waveform float32 [batch, 64600] at 16000 Hz",
+            "output": "2-class logits [batch, 2] corresponding to [spoof, bona_fide]",
+        }
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            manifest_path = self.model_path.with_name("model-manifest.json")
+            if not self.model_path.is_file():
+                raise FileNotFoundError(f"AASIST ONNX model missing: {self.model_path.name}")
+            if not manifest_path.is_file():
+                raise FileNotFoundError("Pinned model-manifest.json is required to verify AASIST provenance")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected = manifest.get("files", {}).get(self.model_path.name)
+            if not expected:
+                raise ValueError(f"Model manifest has no SHA-256 for {self.model_path.name}")
+            digest = hashlib.sha256(self.model_path.read_bytes()).hexdigest()
+            if digest != expected:
+                raise ValueError(f"SHA-256 mismatch for {self.model_path.name}")
+
+            session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
+            inputs, outputs = session.get_inputs(), session.get_outputs()
+            if len(inputs) != 1 or inputs[0].name != "wav":
+                raise ValueError(f"Unexpected AASIST input name/type: {inputs}")
+            if len(outputs) != 1 or outputs[0].name != "logits":
+                raise ValueError(f"Unexpected AASIST output name/type: {outputs}")
+
+            # Dry run test with 64,600 samples
+            probe = session.run(["logits"], {"wav": np.zeros((1, 64600), dtype=np.float32)})[0]
+            if probe.shape != (1, 2) or not np.isfinite(probe).all():
+                raise ValueError("AASIST dry-run returned an invalid output")
+            self.session = session
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            log.warning("Audio detector unavailable: %s", self.error)
+
+    @property
+    def ready(self) -> bool:
+        return self.session is not None
+
+    def predict(self, waveform: np.ndarray) -> tuple[float, list[float]]:
+        if not self.ready:
+            raise RuntimeError("Audio detection model unavailable")
+        if waveform.ndim != 2 or waveform.shape != (1, 64600):
+            raise ValueError(f"Invalid input shape {waveform.shape}, expected (1, 64600)")
+        out = self.session.run(["logits"], {"wav": waveform.astype(np.float32)})[0]
+        logits = out[0]
+        exp_l = np.exp(logits - np.max(logits))
+        probs = exp_l / np.sum(exp_l)
+        p_spoof = float(probs[0])
+        p_bonafide = float(probs[1])
+        return p_spoof, [p_spoof, p_bonafide]

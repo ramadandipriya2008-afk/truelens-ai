@@ -7,8 +7,9 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 from .config import get_settings
 from .schemas.analysis import AnalysisResponse
-from .services.model_registry import ImageDetector
+from .services.model_registry import ImageDetector, AudioDetector
 from detection.video.analyzer import analyze_video as analyze_video_frames
+from detection.audio.analyzer import analyze_audio as analyze_audio_stream
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
 log = logging.getLogger('trustlens')
@@ -32,12 +33,15 @@ app.add_middleware(
 @app.on_event('startup')
 def initialize():
     app.state.image_detector = ImageDetector(s.model_onnx_path)
+    app.state.audio_detector = AudioDetector(s.model_aasist_path)
 
 @app.get('/health')
 @app.get('/api/v1/health')
 def health():
     detector = getattr(app.state, 'image_detector', None)
     ready = bool(detector and detector.ready)
+    audio_det = getattr(app.state, 'audio_detector', None)
+    audio_ready = bool(audio_det and audio_det.ready)
     return {
         'status': 'ok',
         'models': {
@@ -48,13 +52,13 @@ def health():
             },
             'video': {
                 'ready': ready,
-                'name': 'CIFAKE EfficientNet-B0 Frame Analyzer',
+                'name': 'CIFAKE EfficientNet-B0 Frame Analyzer (Research Baseline)',
                 'reason': None if ready else (getattr(detector, 'error', None) or 'Image model not loaded')
             },
             'audio': {
-                'ready': False,
-                'name': 'AASIST',
-                'reason': 'Compatible verified implementation and checkpoint are not configured'
+                'ready': audio_ready,
+                'name': 'AASIST Spectro-Temporal Graph Attention Network',
+                'reason': None if audio_ready else (getattr(audio_det, 'error', None) or 'AASIST model not loaded')
             }
         }
     }
@@ -247,10 +251,99 @@ async def analyze_video(file: UploadFile = File(...)):
     finally:
         path.unlink(missing_ok=True)
 
-@app.post('/analyze/audio')
-@app.post('/api/v1/analyze/audio')
+@app.post('/analyze/audio', response_model=AnalysisResponse)
+@app.post('/api/v1/analyze/audio', response_model=AnalysisResponse)
 async def analyze_audio(file: UploadFile = File(...)):
-    raise HTTPException(503, 'AASIST detection is unavailable: no verified compatible implementation and checkpoint are configured')
+    det = getattr(app.state, 'audio_detector', None)
+    if not det or not det.ready:
+        unavailable()
+
+    filename = file.filename or 'upload.wav'
+    ext = Path(filename).suffix.lower()
+    if ext not in ('.wav', '.mp3', '.flac', '.ogg', '.m4a'):
+        raise HTTPException(415, f'Unsupported audio format "{ext}". Supported formats: WAV, MP3, FLAC, OGG, M4A.')
+
+    path, size = await receive(file, s.audio_max_bytes, AUDIO_SIG)
+    start = time.perf_counter()
+    try:
+        try:
+            windows, aggregate_score, meta = analyze_audio_stream(
+                path,
+                det,
+                max_seconds=120,
+                min_seconds=0.2,
+                max_windows=8
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        except Exception as exc:
+            log.exception('Audio analysis failed')
+            raise HTTPException(400, f'Audio analysis failed: {exc}')
+
+        score_std = meta.get('scoreStd', 0.0)
+        high_variance = bool(score_std > 0.3)
+
+        if high_variance:
+            assessment = 'inconclusive'
+            risk_band = 'unknown'
+        elif aggregate_score >= 0.8:
+            assessment = 'suspicious_synthetic_signals_detected'
+            risk_band = 'high'
+        elif aggregate_score >= 0.5:
+            assessment = 'suspicious_synthetic_signals_detected'
+            risk_band = 'moderate'
+        else:
+            assessment = 'no_strong_synthetic_signals_detected'
+            risk_band = 'low'
+
+        return AnalysisResponse(
+            analysisId=str(uuid.uuid4()),
+            mediaType='audio',
+            fileName=Path(filename).name,
+            fileSizeBytes=size,
+            createdAt=datetime.now(timezone.utc),
+            processingTimeMs=round((time.perf_counter() - start) * 1000, 2),
+            assessment=assessment,
+            riskBand=risk_band,
+            modelScore=aggregate_score,
+            confidence=None,
+            confidenceMethod='Uncalibrated class probability. AASIST was trained on ASVspoof 2019 LA; out-of-domain acoustic environments, codecs, and background noise induce probability dispersion.',
+            evidence=[
+                {
+                    'type': 'spectro_temporal_graph_attention',
+                    'analyzedWindows': meta['analyzedWindows'],
+                    'durationSeconds': meta['durationSeconds'],
+                    'originalSampleRate': meta['originalSampleRate'],
+                    'processedSampleRate': meta['processedSampleRate'],
+                    'syntheticScore': aggregate_score,
+                    'medianScore': meta['medianScore'],
+                    'peakScore': meta['peakScore'],
+                    'minScore': meta['minScore'],
+                    'scoreStd': meta['scoreStd'],
+                    'waveformEnvelope': meta.get('waveformEnvelope', []),
+                    'windows': windows,
+                }
+            ],
+            details=meta,
+            limitations=[
+                'AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks) was trained on the ASVspoof 2019 Logical Access (LA) benchmark.',
+                'The model evaluates raw 16 kHz waveforms with sinc-convolution and spectro-temporal graph attention.',
+                'Audio compression (MP3/AAC/Opus), acoustic reverberation, microphone clipping, and background noise can trigger false-positive spoof signals on real speech.',
+                'Output represents uncalibrated countermeasure signal telemetry and does not constitute absolute proof of voice cloning or authenticity.',
+            ],
+            warnings=[
+                'High temporal variance across windows indicates acoustic instability or non-stationary noise.' if high_variance else 'Audio evaluated on ASVspoof 2019 LA baseline.',
+                'Does not evaluate linguistic veracity, source speaker identity, or conversational context.',
+            ],
+            model={
+                'name': 'AASIST Spectro-Temporal Graph Attention Network',
+                'version': det.metadata.get('version'),
+                'checkpointVerified': True,
+                'device': det.device,
+            }
+        )
+    finally:
+        path.unlink(missing_ok=True)
 
 @app.exception_handler(Exception)
 async def unexpected(request: Request, exc: Exception):

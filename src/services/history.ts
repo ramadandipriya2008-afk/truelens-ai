@@ -55,9 +55,18 @@ export function getCachedPreviewUrl(recordId: string): string | undefined {
   }
 }
 
-function toModality(value: string | null | undefined): Modality {
-  const normalized = String(value || '').toLowerCase()
-  return normalized === 'image' ? 'Image' : normalized === 'audio' ? 'Audio' : 'Video'
+export function toModality(value: string | null | undefined, fileName?: string | null): Modality {
+  const normalized = String(value || '').toLowerCase().trim()
+  if (normalized.includes('audio') || normalized.includes('sound') || normalized.includes('speech') || normalized.includes('voice')) return 'Audio'
+  if (normalized.includes('image') || normalized.includes('img') || normalized.includes('photo')) return 'Image'
+  if (fileName) {
+    const ext = fileName.split('.').pop()?.toLowerCase() || ''
+    if (['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac'].includes(ext)) return 'Audio'
+    if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'].includes(ext)) return 'Image'
+    if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'Video'
+  }
+  if (normalized.includes('video') || normalized.includes('movie') || normalized.includes('clip')) return 'Video'
+  return 'Video'
 }
 
 function toStatus(value: string | null | undefined): AnalysisRecord['status'] {
@@ -77,7 +86,7 @@ export function rowToAnalysisRecord(row: AnalysisRow): AnalysisRecord {
   return {
     id: row.id,
     name: row.file_name || 'Unnamed media',
-    modality: toModality(row.media_type),
+    modality: toModality(row.media_type, row.file_name),
     date: row.created_at ? new Date(row.created_at).toLocaleDateString() : 'Unavailable',
     status: toStatus(row.assessment || row.risk_band),
     confidence: score,
@@ -116,9 +125,13 @@ export async function saveUserAnalysis(
   const assessment = result.assessment || (rawScore >= 0.5 ? 'suspicious_synthetic_signals_detected' : 'no_strong_synthetic_signals_detected')
   const riskBand = result.riskBand || (rawScore >= 0.8 ? 'high' : rawScore >= 0.5 ? 'moderate' : 'low')
 
+  const finalMediaType = (modality === 'Audio' || String(result.mediaType).toLowerCase().includes('audio'))
+    ? 'audio'
+    : (result.mediaType || modality).toLowerCase()
+
   const { data, error } = await supabase.from('analyses').insert({
     user_id: user.id,
-    media_type: (result.mediaType || modality).toLowerCase(),
+    media_type: finalMediaType,
     file_name: result.fileName || fallbackFileName,
     file_size_bytes: result.fileSizeBytes ?? fallbackFileSize,
     assessment,

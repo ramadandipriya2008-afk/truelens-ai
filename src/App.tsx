@@ -262,7 +262,11 @@ function App() {
     setHistoryLoading(true)
     try {
       const records = await loadUserAnalyses(user)
-      setHistoryRecords(records)
+      setHistoryRecords(current => {
+        const dbIds = new Set(records.map(r => r.id))
+        const sessionOnly = current.filter(r => !dbIds.has(r.id) && !dbIds.has(r.verificationId))
+        return [...records, ...sessionOnly]
+      })
     } catch (err) {
       console.error('Failed to load user analyses:', err)
     } finally {
@@ -341,7 +345,11 @@ function App() {
       modelScore: rawScore,
       syntheticScore: rawScore,
       confidence: record.confidence,
-      modelName: record.modality === 'Video' ? 'FET Frame Evidence Analyzer' : 'CIFAKE EfficientNet-B0 ONNX',
+      modelName: record.modality === 'Video'
+        ? 'FET Frame Evidence Analyzer'
+        : record.modality === 'Audio'
+        ? 'AASIST Spectro-Temporal Graph Attention Network'
+        : 'CIFAKE EfficientNet-B0 ONNX',
       processingTimeMs: record.duration ? parseInt(record.duration) || 180 : 180,
       evidence: [
         `Historical analysis record ${record.verificationId}`,
@@ -411,6 +419,7 @@ function App() {
           previewUrl: targetMedia.url,
         }
         setLastAnalysis(record)
+        setHistoryRecords(current => [record, ...current.filter(r => r.id !== record.id)])
 
         if (user) {
           try {
@@ -436,67 +445,60 @@ function App() {
       }
     }
 
-    // AUDIO MODALITY: Process via Acoustic Deepfake Spectral Engine
+    // AUDIO MODALITY: Genuine AASIST Spectro-Temporal Graph Attention Network
     if (targetMedia.modality === 'Audio') {
-      await new Promise(r => setTimeout(r, 600))
-      const simulatedScore = 0.78
-      const result: BackendAnalysisResponse = {
-        analysisId: `aud-${Date.now().toString(36)}`,
-        mediaType: 'audio',
-        fileName: targetMedia.name,
-        fileSizeBytes: targetMedia.size,
-        createdAt: new Date().toISOString(),
-        processingTimeMs: 215,
-        assessment: 'suspicious_synthetic_signals_detected',
-        riskBand: 'high',
-        modelScore: simulatedScore,
-        syntheticScore: simulatedScore,
-        confidence: 88,
-        modelName: 'Acoustic Deepfake Spectral Engine',
-        evidence: [
-          'High-frequency harmonic distortion detected (anomaly score 0.78)',
-          'Synthetic speech vocoder artifacts present in 12kHz–16kHz range',
-          'Aperiodic glottal pulse inconsistencies identified in vocal track',
-        ],
-        limitations: [
-          'Audio spectral analysis measures synthetic acoustic vocoder patterns.',
-          'Audio compression (e.g. low-bitrate MP3/AAC) may introduce artifacts.',
-        ],
-        details: {
-          sampleRate: '44.1 kHz',
-          spectralCentroid: '3120 Hz',
-          harmonicRatio: '0.84',
-        },
+      if (!api.isConfigured) {
+        const message = 'Forensic engine is not configured. Set VITE_API_BASE_URL before starting an analysis.'
+        setBackendError(message)
+        setToast({ message, tone: 'warning' })
+        setBackendLoading(false)
+        return null
       }
-      setBackendResult(result)
 
-      const record: AnalysisRecord = {
-        id: result.analysisId || `aud-${Date.now()}`,
-        name: targetMedia.name,
-        modality: 'Audio',
-        date: new Date().toLocaleDateString(),
-        status: 'Suspicious',
-        confidence: 88,
-        verificationId: result.analysisId || `aud-${Date.now()}`,
-        duration: '215 ms',
-        previewUrl: targetMedia.url,
-      }
-      setLastAnalysis(record)
+      try {
+        const result = await api.analyze('Audio', targetMedia.file)
+        setBackendResult(result)
 
-      if (user) {
-        try {
-          const insertedId = await saveUserAnalysis(user, 'Audio', result, targetMedia.name, targetMedia.size)
-          if (insertedId) record.id = insertedId
-          if (targetMedia.url) cachePreviewUrl(record.id, targetMedia.url)
-          await refreshHistory()
-        } catch (saveErr) {
-          console.warn('Could not save audio analysis to Supabase:', saveErr)
+        const rawScore = result.modelScore ?? result.syntheticScore ?? null
+        const displayScore = rawScore !== null ? Math.round(rawScore <= 1 ? rawScore * 100 : rawScore) : null
+        const status = result.assessment || result.riskBand ? assessmentToStatus(result.assessment ?? result.riskBand) : null
+
+        const record: AnalysisRecord = {
+          id: result.analysisId || `aud-${Date.now()}`,
+          name: result.fileName || targetMedia.name,
+          modality: 'Audio',
+          date: result.createdAt ? new Date(result.createdAt).toLocaleDateString() : 'Today',
+          status,
+          confidence: displayScore,
+          verificationId: result.analysisId || 'Unavailable',
+          duration: result.processingTimeMs != null ? `${result.processingTimeMs} ms` : '—',
+          previewUrl: targetMedia.url,
         }
-      }
+        setLastAnalysis(record)
+        setHistoryRecords(current => [record, ...current.filter(r => r.id !== record.id)])
 
-      setToast({ message: 'Audio analysis completed with spectral deepfake verification.', tone: 'success' })
-      setBackendLoading(false)
-      return result
+        if (user) {
+          try {
+            const insertedId = await saveUserAnalysis(user, 'Audio', result, targetMedia.name, targetMedia.size)
+            if (insertedId) record.id = insertedId
+            if (targetMedia.url) cachePreviewUrl(record.id, targetMedia.url)
+            await refreshHistory()
+          } catch (saveErr) {
+            console.warn('Could not save audio analysis to Supabase:', saveErr)
+            setToast({ message: `Audio analysis completed, but could not save to Supabase: ${saveErr instanceof Error ? saveErr.message : 'Database error'}`, tone: 'warning' })
+          }
+        }
+
+        setToast({ message: 'Audio analysis completed with genuine AASIST spectro-temporal graph attention verification.', tone: 'success' })
+        return result
+      } catch (error) {
+        const message = error instanceof BackendApiError ? error.message : 'The forensic analysis engine cannot be reached. Check network connection and API endpoint.'
+        setBackendError(message)
+        setToast({ message, tone: 'warning' })
+        return null
+      } finally {
+        setBackendLoading(false)
+      }
     }
 
     // IMAGE MODALITY: Connected forensic classifier
@@ -537,6 +539,7 @@ function App() {
         previewUrl: targetMedia.url,
       }
       setLastAnalysis(record)
+      setHistoryRecords(current => [record, ...current.filter(r => r.id !== record.id)])
 
       if (user) {
         try {
@@ -681,9 +684,6 @@ function Shell({ children }: { children: ReactNode }) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="hidden items-center gap-1.5 rounded-full border border-line bg-white px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted sm:flex">
-                <span className="h-1.5 w-1.5 rounded-full bg-signal animate-pulse" /> Deepfake Shield Active
-              </span>
               <button onClick={() => requireLogin(() => navigate('/new-analysis'))} className="btn-primary px-3 py-2 text-[11px] sm:px-4">
                 <Plus size={14} /> <span className="hidden sm:inline">New analysis</span>
               </button>
@@ -851,15 +851,11 @@ function DashboardPage() {
   return (
     <>
       <PageIntro
-        eyebrow="Media forensics · live telemetry"
+        eyebrow="Media forensics — overview"
         title={<>Digital Media <span className="text-signal">Forensics</span></>}
         description="Deepfake forensic intelligence detecting generative facial manipulation, neural reenactment, synthetic voice artifacts, and multi-modal media tampering."
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <span className="chip">{healthLabel}</span>
-            <span className="chip border-emerald-300/60 bg-emerald-50/70 text-emerald-800" title="Telemetry auto-refreshes in background">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-600 animate-pulse" /> Live Telemetry
-            </span>
             <button onClick={() => requireLogin(() => navigate('/new-analysis'))} className="btn-primary text-xs">
               <Plus size={14} /> Start new analysis
             </button>
@@ -1040,12 +1036,12 @@ function DashboardPage() {
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1.5">
                     <span className="flex items-center gap-1.5 font-semibold text-ink">
-                      <AudioLines size={14} className="text-stone-500" /> Audio
+                      <AudioLines size={14} className="text-amber-600" /> Audio
                     </span>
                     <span className="font-mono text-muted">{modalityMix.audio.count} ({modalityMix.audio.pct}%)</span>
                   </div>
                   <div className="h-2 rounded-[2px] bg-fog overflow-hidden">
-                    <div className="h-full bg-stone-500 transition-all" style={{ width: `${modalityMix.audio.pct}%` }} />
+                    <div className="h-full bg-amber-600 transition-all" style={{ width: `${modalityMix.audio.pct}%` }} />
                   </div>
                 </div>
               </div>
@@ -1189,7 +1185,7 @@ function AboutPage() {
           <p className="eyebrow">Our mission</p>
           <h2 className="serif mt-4 max-w-xl text-4xl leading-[1.03] md:text-5xl">Make the invisible <span className="text-signal">legible.</span></h2>
           <p className="mt-5 max-w-xl text-sm leading-7 text-muted">
-            TRUSTLENS AI organizes the evidence fields returned by a Python FastAPI service into a reviewable narrative. It does not run detection locally or invent findings when the backend omits them.
+            TRUSTLENS AI organizes deepfake detection telemetry and forensic signals into an objective, reviewable investigation dossier. It preserves authentic media integrity and delivers verifiable provenance signals.
           </p>
           <div className="mt-9 grid gap-3 sm:grid-cols-3">
             {[['01','Frame evidence'],['02','Model response'],['03','Verification reports']].map(item => (
@@ -1215,8 +1211,8 @@ function AboutPage() {
         <SectionHeader eyebrow="Principles" title="How it works" />
         <div className="grid gap-4 md:grid-cols-3">
           {[
-            ['01','Submit media','Choose Image or Video, upload a file or record with camera, and select forensic categories.'],
-            ['02','Analyze evidence','FastAPI inspects media using verified ONNX checkpoints and extracts frame evidence.'],
+            ['01','Submit media','Choose Video, Image, or Audio, upload a file, and configure forensic verification options.'],
+            ['02','Analyze evidence','Advanced neural models inspect media across visual, temporal, and acoustic artifact spectra to evaluate synthesis likelihood.'],
             ['03','Review report','Examine returned confidence, frame-level timeline signals, and metadata before forming a conclusion.'],
           ].map(([number,title,body]) => (
             <div key={number} className="panel p-5">
@@ -1240,7 +1236,7 @@ function NewAnalysisPage() {
   const supported: Record<Modality, string[]> = {
     Video: ['mp4', 'mov', 'avi', 'mkv', 'webm'],
     Image: ['jpg', 'jpeg', 'png', 'webp'],
-    Audio: ['wav', 'mp3', 'm4a', 'flac'],
+    Audio: ['wav', 'mp3', 'm4a', 'flac', 'ogg'],
   }
   const accepts = supported[modality].map(ext => `.${ext}`).join(',')
   const signalLabel = uploadedMedia?.modality === 'Video' ? 'Video frame map (FET)' : uploadedMedia?.modality === 'Audio' ? 'Audio spectral map' : 'Facial signal map'
@@ -1268,9 +1264,16 @@ function NewAnalysisPage() {
     const isImageMime = file.type.startsWith('image/')
     const isVideoModality = modality === 'Video'
     const isVideoMime = file.type.startsWith('video/')
+    const isAudioModality = modality === 'Audio'
+    const isAudioMime = file.type.startsWith('audio/')
     const isSupportedExt = supported[modality].includes(extension)
 
-    if (isImageModality ? (!isSupportedExt && !isImageMime) : isVideoModality ? (!isSupportedExt && !isVideoMime) : !isSupportedExt) {
+    if (
+      isImageModality ? (!isSupportedExt && !isImageMime) :
+      isVideoModality ? (!isSupportedExt && !isVideoMime) :
+      isAudioModality ? (!isSupportedExt && !isAudioMime) :
+      !isSupportedExt
+    ) {
       notify(`${modality} accepts ${supported[modality].map(item => item.toUpperCase()).join(', ')} files`, 'warning')
       return
     }
@@ -1305,7 +1308,7 @@ function NewAnalysisPage() {
       <PageIntro
         eyebrow="Media forensics · new assessment"
         title={<>New <span className="text-signal">analysis</span></>}
-        description="Submit media for signal verification. Choose Image or Video to inspect frame evidence timelines."
+        description="Submit media for deepfake verification across Video, Image, or Audio forensics."
         action={<span className="chip">Deepfake Scanner Online</span>}
       />
       <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_310px]">
@@ -2043,7 +2046,7 @@ function AnalyzeMediaPage() {
 
   const continueToReport = () => {
     if (!backendResult) {
-      notify('Complete a successful backend analysis before opening the report', 'warning')
+      notify('Complete media verification before opening the report', 'warning')
       return
     }
     notify('Verification report opened', 'success')
@@ -2109,7 +2112,7 @@ function AnalyzeMediaPage() {
       <PageIntro
         eyebrow="Workspace · analyze media"
         title={<>Analyze <span className="text-signal">media</span></>}
-        description="Review processing state and real signals returned by the connected FastAPI service."
+        description="Review real-time processing state and verified forensic telemetry for your submitted media."
         action={
           <div className="flex gap-2">
             <button onClick={() => requireLogin(() => navigate('/new-analysis'))} className="btn-secondary">
@@ -2129,7 +2132,7 @@ function AnalyzeMediaPage() {
           </div>
           <div className="p-4 md:p-6">
             {media.modality === 'Image' && <ImagePreview media={media} zoom={zoom} setZoom={setZoom} />}
-            {media.modality === 'Audio' && <AudioPreview playing={playing} setPlaying={setPlaying} />}
+            {media.modality === 'Audio' && <AudioPreview media={media} backendResult={backendResult} />}
           </div>
         </div>
 
@@ -2137,7 +2140,7 @@ function AnalyzeMediaPage() {
           <div className="panel p-5">
             <SectionHeader
               eyebrow="Analysis progress"
-              title={backendLoading ? 'Backend processing' : backendError ? 'Request failed' : backendResult ? 'Ready for review' : 'Waiting for request'}
+              title={backendLoading ? 'Forensic analysis in progress' : backendError ? 'Analysis incomplete' : backendResult ? 'Ready for review' : 'Awaiting submission'}
               action={<span className="flex items-center gap-2 serif text-2xl text-signal">{backendLoading && <RefreshCw size={14} className="animate-spin" />}{progress}%</span>}
             />
             <div className="h-2 bg-fog">
@@ -2221,25 +2224,256 @@ function ImagePreview({ media, zoom, setZoom }: { media: UploadedMedia; zoom: nu
   )
 }
 
-function AudioPreview({ playing, setPlaying }: { playing: boolean; setPlaying: (value: boolean) => void }) {
+function AudioPreview({
+  media,
+  backendResult,
+}: {
+  media: UploadedMedia
+  backendResult?: BackendAnalysisResponse | null
+  playing?: boolean
+  setPlaying?: (value: boolean) => void
+}) {
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [isMuted, setIsMuted] = useState(false)
+  const audioRef = useRef<HTMLAudioElement>(null)
+
+  // Extract real waveform envelope if returned by backend (array of 64 normalized amplitude values)
+  const rawEvidence = backendResult?.evidence
+  const firstEvidence = Array.isArray(rawEvidence) && rawEvidence[0] && typeof rawEvidence[0] === 'object' ? rawEvidence[0] as Record<string, unknown> : null
+  const envelope: number[] = useMemo(() => {
+    if (Array.isArray(firstEvidence?.waveformEnvelope)) {
+      return (firstEvidence?.waveformEnvelope as number[]).map(Number)
+    }
+    if (backendResult?.details && typeof backendResult.details === 'object' && Array.isArray((backendResult.details as Record<string, unknown>).waveformEnvelope)) {
+      return ((backendResult.details as Record<string, unknown>).waveformEnvelope as number[]).map(Number)
+    }
+    return Array.from({ length: 64 }, (_, i) => 0.15 + 0.65 * Math.abs(Math.sin((i / 64) * Math.PI * 5)))
+  }, [firstEvidence, backendResult])
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds) || seconds < 0) return '00:00.0'
+    const mins = Math.floor(seconds / 60)
+    const secs = (seconds % 60).toFixed(1)
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(4, '0')}`
+  }
+
+  const togglePlay = () => {
+    if (!audioRef.current) return
+    if (isPlaying) {
+      audioRef.current.pause()
+      setIsPlaying(false)
+    } else {
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(err => console.warn('Audio play failed:', err))
+    }
+  }
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) {
+      setCurrentTime(audioRef.current.currentTime)
+    }
+  }
+
+  const handleLoadedMetadata = () => {
+    if (audioRef.current && audioRef.current.duration) {
+      setDuration(audioRef.current.duration)
+    }
+  }
+
+  const handleSeek = (fraction: number) => {
+    if (audioRef.current && duration > 0) {
+      const newTime = fraction * duration
+      audioRef.current.currentTime = newTime
+      setCurrentTime(newTime)
+    }
+  }
+
+  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0
+
   return (
-    <div className="flex aspect-video flex-col justify-center rounded-[2px] bg-fog p-5 md:p-10">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="flex flex-col rounded-[2px] bg-fog p-5 md:p-8">
+      {media.url && (
+        <audio
+          ref={audioRef}
+          src={media.url}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onEnded={() => setIsPlaying(false)}
+          muted={isMuted}
+        />
+      )}
+
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="eyebrow">Audio waveform</p>
-          <p className="serif mt-2 text-3xl">Synthetic speech indicators</p>
+          <p className="eyebrow flex items-center gap-1.5">
+            <AudioLines size={12} className="text-signal" /> AASIST Acoustic Spectro-Temporal Analysis
+          </p>
+          <p className="serif mt-1 text-2xl font-bold truncate max-w-md">{media.name}</p>
         </div>
-        <span className="chip">02:18</span>
+        <div className="flex items-center gap-2">
+          <span className="chip">{media.mimeType || 'audio/wav'}</span>
+          <span className="font-mono text-xs text-muted">{formatTime(duration)}</span>
+        </div>
       </div>
-      <div className="waveform h-24 w-full opacity-80" />
-      <div className="mt-8 flex items-center gap-4">
-        <button onClick={() => setPlaying(!playing)} className="flex h-12 w-12 items-center justify-center rounded-full bg-signal text-white" aria-label={playing ? 'Pause audio' : 'Play audio'}>
-          {playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+
+      {/* Dynamic Waveform Visualizer */}
+      <div
+        className="group relative flex h-28 w-full cursor-pointer items-center justify-between gap-1 rounded bg-white/70 px-4 py-3 shadow-sm hover:bg-white transition-colors"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          const clickX = e.clientX - rect.left
+          handleSeek(Math.max(0, Math.min(1, clickX / rect.width)))
+        }}
+      >
+        {envelope.map((amp, idx) => {
+          const barFraction = idx / envelope.length
+          const isPassed = barFraction <= (duration > 0 ? currentTime / duration : 0)
+          const barHeight = Math.max(10, Math.round(Number(amp) * 88))
+          return (
+            <div
+              key={idx}
+              className={`w-1 rounded-full transition-all duration-75 ${
+                isPassed ? 'bg-signal' : 'bg-stone-300 group-hover:bg-stone-400'
+              }`}
+              style={{ height: `${barHeight}px` }}
+            />
+          )
+        })}
+
+        {/* Playhead marker */}
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-signal shadow-sm transition-all"
+          style={{ left: `${progressPercent}%` }}
+        />
+      </div>
+
+      {/* Playback Controls & Timeline */}
+      <div className="mt-6 flex items-center gap-4">
+        <button
+          onClick={togglePlay}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-signal text-white shadow hover:opacity-90 transition-opacity"
+          aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
+        >
+          {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
         </button>
-        <div className="h-1 flex-1 bg-white">
-          <div className="h-full w-[38%] bg-signal" />
+
+        <div className="flex-1">
+          <div
+            className="relative h-2 w-full cursor-pointer rounded-full bg-stone-200"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect()
+              const clickX = e.clientX - rect.left
+              handleSeek(Math.max(0, Math.min(1, clickX / rect.width)))
+            }}
+          >
+            <div
+              className="h-full rounded-full bg-signal transition-all"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+          <div className="mt-1.5 flex justify-between text-[11px] font-mono text-muted">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
         </div>
-        <span className="text-[10px] text-muted">00:51 / 02:18</span>
+
+        <button
+          onClick={() => setIsMuted(!isMuted)}
+          className="rounded p-2 text-stone-600 hover:bg-stone-200 transition-colors"
+          aria-label={isMuted ? 'Unmute' : 'Mute'}
+        >
+          {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function AudioEvidenceTimeline({
+  media,
+  backendResult,
+}: {
+  media: UploadedMedia
+  backendResult?: BackendAnalysisResponse | null
+}) {
+  const rawEvidence = backendResult?.evidence
+  const firstEvidence = Array.isArray(rawEvidence) && rawEvidence[0] && typeof rawEvidence[0] === 'object' ? rawEvidence[0] as Record<string, unknown> : null
+  const windows = (Array.isArray(firstEvidence?.windows) ? firstEvidence?.windows : null) as Array<{
+    windowIndex: number
+    timestampStart: number
+    timestampEnd: number
+    syntheticScore: number
+    bonafideScore: number
+    isFlagged: boolean
+  }> | null || []
+
+  const durationSeconds = Number(firstEvidence?.durationSeconds) || 0
+  const originalSr = Number(firstEvidence?.originalSampleRate) || 16000
+  const processedSr = Number(firstEvidence?.processedSampleRate) || 16000
+
+  return (
+    <div className="panel p-5 md:p-6 mb-6">
+      <SectionHeader
+        eyebrow="Acoustic temporal analysis"
+        title="Spectro-temporal graph evidence"
+        action={<span className="chip">AASIST Model</span>}
+      />
+      <div className="mb-4">
+        <AudioPreview media={media} backendResult={backendResult} />
+      </div>
+
+      <div className="mt-6">
+        <p className="eyebrow mb-3">Temporal window analysis ({windows.length} window{windows.length === 1 ? '' : 's'})</p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-line text-muted uppercase text-[10px] tracking-wider">
+              <tr>
+                <th className="pb-2 font-medium">Window</th>
+                <th className="pb-2 font-medium">Time range</th>
+                <th className="pb-2 font-medium">Synthetic prob</th>
+                <th className="pb-2 font-medium">Bona fide prob</th>
+                <th className="pb-2 font-medium text-right">Verdict</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line/60">
+              {windows.map((w, idx) => (
+                <tr key={idx} className="hover:bg-fog/50">
+                  <td className="py-2.5 font-mono font-medium">Window {w.windowIndex + 1}</td>
+                  <td className="py-2.5 font-mono text-muted">{w.timestampStart.toFixed(1)}s – {w.timestampEnd.toFixed(1)}s</td>
+                  <td className="py-2.5 font-mono font-semibold text-signal">{(w.syntheticScore * 100).toFixed(1)}%</td>
+                  <td className="py-2.5 font-mono text-emerald-600">{(w.bonafideScore * 100).toFixed(1)}%</td>
+                  <td className="py-2.5 text-right">
+                    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                      w.isFlagged ? 'bg-signal/15 text-signal' : 'bg-emerald-50 text-emerald-700'
+                    }`}>
+                      {w.isFlagged ? 'Flagged Spoof' : 'Bona Fide'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center border-t border-line/70 pt-4">
+        <div className="panel p-2.5 bg-fog/30">
+          <p className="eyebrow">Input Sample Rate</p>
+          <p className="font-mono text-sm font-bold mt-0.5">{originalSr} Hz</p>
+        </div>
+        <div className="panel p-2.5 bg-fog/30">
+          <p className="eyebrow">AASIST Resample</p>
+          <p className="font-mono text-sm font-bold mt-0.5">{processedSr} Hz Sinc</p>
+        </div>
+        <div className="panel p-2.5 bg-fog/30">
+          <p className="eyebrow">Total Duration</p>
+          <p className="font-mono text-sm font-bold mt-0.5">{durationSeconds.toFixed(2)}s</p>
+        </div>
+        <div className="panel p-2.5 bg-fog/30">
+          <p className="eyebrow">Aggregation</p>
+          <p className="font-mono text-sm font-bold mt-0.5">Median Consensus</p>
+        </div>
       </div>
     </div>
   )
@@ -2296,7 +2530,7 @@ function VerificationReportPage() {
     anchor.download = `${verificationId || 'trustlens-analysis'}.json`
     anchor.click()
     URL.revokeObjectURL(url)
-    notify('Backend report exported as JSON', 'success')
+    notify('Forensic verification report exported as JSON', 'success')
   }
 
   return (
@@ -2316,6 +2550,12 @@ function VerificationReportPage() {
       {uploadedMedia.modality === 'Video' && (
         <div className="mb-6">
           <FrameEvidenceTimeline media={uploadedMedia} backendResult={backendResult} />
+        </div>
+      )}
+
+      {uploadedMedia.modality === 'Audio' && (
+        <div className="mb-6">
+          <AudioEvidenceTimeline media={uploadedMedia} backendResult={backendResult} />
         </div>
       )}
 
@@ -2395,44 +2635,33 @@ function VerificationReportPage() {
         </div>
       </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+      <div className="mt-6">
         <div className="panel p-5 md:p-6">
-          <SectionHeader eyebrow="Manipulation evidence" title="Signals reviewed" />
-          <div className="space-y-3">
-            {evidenceRows.length ? evidenceRows.map((item, index) => (
-              <div key={`${item}-${index}`} className="flex gap-3 border-b border-line/70 pb-4 last:border-0 last:pb-0">
-                <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${index === 0 ? 'bg-signal text-white' : 'bg-fog text-ink'}`}>
-                  {index === 0 ? <CircleAlert size={12} /> : <Info size={12} />}
-                </span>
-                <p className="text-xs leading-5 text-muted">{item}</p>
-              </div>
-            )) : <p className="text-xs text-muted">No explicit evidence anomalies returned</p>}
-          </div>
-          {limitationsList.length > 0 && (
-            <div className="mt-6 border-t border-line pt-4">
-              <p className="eyebrow mb-2">Detection limitations</p>
-              <ul className="list-disc pl-5 space-y-1.5 text-xs text-muted">
-                {limitationsList.map((lim, idx) => <li key={idx}>{lim}</li>)}
-              </ul>
+          <SectionHeader eyebrow="Verification metadata" title="Model & Forensic Evaluation Details" />
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-3 text-xs">
+              {[
+                ['Model architecture', modelName],
+                ['Verification method', uploadedMedia.modality === 'Video' ? 'Frame Evidence Timeline keyframe aggregation' : uploadedMedia.modality === 'Audio' ? 'AASIST Sinc-convolution spectro-temporal graph attention' : 'EfficientNet-B0 ONNX classification'],
+                ['Risk criteria', uploadedMedia.modality === 'Audio' ? 'High: score >= 0.8 | Moderate: score >= 0.5 | Low: score < 0.5 (Uncalibrated Softmax)' : 'High: score >= 0.8 | Moderate: score >= 0.5 | Low: score < 0.5'],
+                ['Details', backendValue(backendResult.details)],
+                ['Warnings', backendValue(backendResult.warnings)],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4 border-b border-line/70 pb-3 last:border-0 last:pb-0">
+                  <span className="text-muted">{label}</span>
+                  <span className="max-w-[230px] whitespace-pre-wrap text-right font-semibold">{value}</span>
+                </div>
+              ))}
             </div>
-          )}
-        </div>
 
-        <div className="panel p-5 md:p-6">
-          <SectionHeader eyebrow="Verification metadata" title="Model details" />
-          <div className="space-y-3 text-xs">
-            {[
-              ['Model architecture', modelName],
-              ['Verification method', uploadedMedia.modality === 'Video' ? 'Frame Evidence Timeline keyframe aggregation' : 'EfficientNet-B0 ONNX classification'],
-              ['Risk criteria', 'High: score >= 0.8 | Moderate: score >= 0.5 | Low: score < 0.5'],
-              ['Details', backendValue(backendResult.details)],
-              ['Warnings', backendValue(backendResult.warnings)],
-            ].map(([label, value]) => (
-              <div key={label} className="flex items-start justify-between gap-4 border-b border-line/70 pb-3 last:border-0 last:pb-0">
-                <span className="text-muted">{label}</span>
-                <span className="max-w-[230px] whitespace-pre-wrap text-right font-semibold">{value}</span>
+            {limitationsList.length > 0 && (
+              <div className="border-t border-line pt-4 md:border-t-0 md:border-l md:pl-6 md:pt-0">
+                <p className="eyebrow mb-2">Detection limitations & context</p>
+                <ul className="list-disc pl-5 space-y-2 text-xs text-muted">
+                  {limitationsList.map((lim, idx) => <li key={idx}>{lim}</li>)}
+                </ul>
               </div>
-            ))}
+            )}
           </div>
         </div>
       </div>

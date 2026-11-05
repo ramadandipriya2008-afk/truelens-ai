@@ -1,0 +1,15 @@
+{
+  "model_name": "AASIST",
+  "architecture": "Integrated Spectro-Temporal Graph Attention Network",
+  "framework": "ONNX Runtime",
+  "source": "https://huggingface.co/SpeechAntiSpoofingBenchmarks/AASIST",
+  "upstream_paper": "Jung et al., AASIST: Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks (ICASSP 2022)",
+  "upstream_code": "https://github.com/clovaai/aasist",
+  "license": "MIT",
+  "dataset": "ASVspoof 2019 Logical Access (LA)",
+  "input": "mono raw waveform float32 [batch, 64600] at 16000 Hz",
+  "output": "2-class logits [batch, 2] corresponding to [spoof, bona_fide]",
+  "files": {
+    "model.onnx": "130e536266b7c537f9a13029e1612a9f392fd1cc827783683b6d1c062a3db5e1"
+  }
+}

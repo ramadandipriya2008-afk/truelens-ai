@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"Dashboard"},{"path":"/about","title":"About"},{"path":"/new-analysis","title":"New Analysis"},{"path":"/analyze","title":"Analyze Media"},{"path":"/report","title":"Verification Report"},{"path":"/model-evolution","title":"Model Evolution"},{"path":"/history","title":"Analysis History"}]}

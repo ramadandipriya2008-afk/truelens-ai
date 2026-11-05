@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     video_max_seconds: int = 120
     video_sample_frames: int = 12
     model_onnx_path: str = str(ROOT / 'detection' / 'checkpoints' / 'cifake-efficientnet-b0' / 'model.onnx')
+    model_aasist_path: str = str(ROOT / 'detection' / 'checkpoints' / 'aasist' / 'model.onnx')
     device: str = 'auto'
     upload_timeout_seconds: int = 60
 

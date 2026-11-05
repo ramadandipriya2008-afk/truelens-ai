@@ -22,15 +22,15 @@ export class BackendApiError extends Error {
 
 function messageForStatus(status: number) {
   const messages: Record<number, string> = {
-    400: 'The backend rejected this media as invalid. Check the file and try again.',
-    413: 'This file is too large for the backend to process.',
-    415: 'This file format is not supported by the backend.',
-    422: 'The backend could not validate this media. Check the file and try again.',
-    500: 'The backend encountered an error while processing this media.',
-    503: 'Detection model unavailable. Please retry shortly.',
-    504: 'The backend request timed out. Please retry.',
+    400: 'The forensic analysis engine rejected this media as invalid. Check the file and try again.',
+    413: 'This file exceeds the allowable size limit for analysis.',
+    415: 'This file format is not supported for forensic analysis.',
+    422: 'The media validation check could not process this file. Check the file and try again.',
+    500: 'The forensic analysis engine encountered an unexpected error while evaluating this media.',
+    503: 'Forensic detection model is currently initializing or unavailable. Please retry shortly.',
+    504: 'The forensic analysis request timed out. Please retry.',
   }
-  return messages[status] || `The backend request failed (HTTP ${status}).`
+  return messages[status] || `Analysis request encountered an issue (Status ${status}).`
 }
 
 async function readError(response: Response) {
@@ -46,7 +46,7 @@ async function readError(response: Response) {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!API_URL) throw new BackendApiError({ status: null, message: 'Backend is not configured. Set VITE_API_BASE_URL to connect FastAPI.' })
+  if (!API_URL) throw new BackendApiError({ status: null, message: 'Forensic engine is not configured. Set VITE_API_BASE_URL to connect the analysis service.' })
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
@@ -72,7 +72,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     console.error(`[TrustLens API] Request failed for ${url}:`, err)
     throw new BackendApiError({
       status: null,
-      message: `The backend cannot be reached at ${url}. Check that FastAPI is running on port 8000 and CORS allows origin ${typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173'}.`,
+      message: `The forensic analysis service cannot be reached. Ensure the analysis engine is running and accessible.`,
     })
   } finally {
     window.clearTimeout(timeout)

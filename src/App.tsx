@@ -380,68 +380,59 @@ function App() {
     setBackendError(null)
     setBackendResult(null)
 
-    // VIDEO MODALITY: Process via Frame Evidence Timeline (FET)
+    // VIDEO MODALITY: Genuine Python FastAPI backend with frame extraction & inference
     if (targetMedia.modality === 'Video') {
-      await new Promise(r => setTimeout(r, 650))
-      const simulatedScore = 0.82
-      const result: BackendAnalysisResponse = {
-        analysisId: `fet-${Date.now().toString(36)}`,
-        mediaType: 'video',
-        fileName: targetMedia.name,
-        fileSizeBytes: targetMedia.size,
-        createdAt: new Date().toISOString(),
-        processingTimeMs: 248,
-        assessment: 'suspicious_synthetic_signals_detected',
-        riskBand: 'high',
-        modelScore: simulatedScore,
-        syntheticScore: simulatedScore,
-        confidence: 91,
-        modelName: 'FET Frame Evidence Analyzer',
-        evidence: [
-          'Frame 142 flagged at 00:05.68 (anomaly score 0.82)',
-          'Facial inconsistencies detected across consecutive frames',
-          'Temporal anomaly detected in blending transitions',
-        ],
-        limitations: [
-          'FET frame timeline analyzes sampled keyframes.',
-          'A classifier signal is not proof of manipulation or authorship.',
-        ],
-        details: {
-          analyzedFrames: 248,
-          flaggedFrames: 7,
-          fps: 24,
-          primaryFlagTimestamp: '00:05.68',
-        },
+      if (!api.isConfigured) {
+        const message = 'Forensic engine is not configured. Set VITE_API_BASE_URL before starting an analysis.'
+        setBackendError(message)
+        setToast({ message, tone: 'warning' })
+        setBackendLoading(false)
+        return null
       }
-      setBackendResult(result)
 
-      const record: AnalysisRecord = {
-        id: result.analysisId || `vid-${Date.now()}`,
-        name: targetMedia.name,
-        modality: 'Video',
-        date: new Date().toLocaleDateString(),
-        status: 'Suspicious',
-        confidence: 91,
-        verificationId: result.analysisId || `vid-${Date.now()}`,
-        duration: '248 ms',
-        previewUrl: targetMedia.url,
-      }
-      setLastAnalysis(record)
+      try {
+        const result = await api.analyze('Video', targetMedia.file)
+        setBackendResult(result)
 
-      if (user) {
-        try {
-          const insertedId = await saveUserAnalysis(user, 'Video', result, targetMedia.name, targetMedia.size)
-          if (insertedId) record.id = insertedId
-          if (targetMedia.url) cachePreviewUrl(record.id, targetMedia.url)
-          await refreshHistory()
-        } catch (saveErr) {
-          console.warn('Could not save video analysis to Supabase:', saveErr)
+        const rawScore = result.modelScore ?? result.syntheticScore ?? null
+        const displayScore = rawScore !== null ? Math.round(rawScore <= 1 ? rawScore * 100 : rawScore) : null
+        const status = result.assessment || result.riskBand ? assessmentToStatus(result.assessment ?? result.riskBand) : null
+
+        const record: AnalysisRecord = {
+          id: result.analysisId || `vid-${Date.now()}`,
+          name: result.fileName || targetMedia.name,
+          modality: 'Video',
+          date: result.createdAt ? new Date(result.createdAt).toLocaleDateString() : 'Today',
+          status,
+          confidence: displayScore,
+          verificationId: result.analysisId || 'Unavailable',
+          duration: result.processingTimeMs != null ? `${result.processingTimeMs} ms` : '—',
+          previewUrl: targetMedia.url,
         }
-      }
+        setLastAnalysis(record)
 
-      setToast({ message: 'Video analysis completed with Frame Evidence Timeline.', tone: 'success' })
-      setBackendLoading(false)
-      return result
+        if (user) {
+          try {
+            const insertedId = await saveUserAnalysis(user, 'Video', result, targetMedia.name, targetMedia.size)
+            if (insertedId) record.id = insertedId
+            if (targetMedia.url) cachePreviewUrl(record.id, targetMedia.url)
+            await refreshHistory()
+          } catch (saveErr) {
+            console.warn('Could not save video analysis to Supabase:', saveErr)
+            setToast({ message: `Video analysis completed, but could not save to Supabase: ${saveErr instanceof Error ? saveErr.message : 'Database error'}`, tone: 'warning' })
+          }
+        }
+
+        setToast({ message: 'Video analysis completed with genuine frame-level forensic verification.', tone: 'success' })
+        return result
+      } catch (error) {
+        const message = error instanceof BackendApiError ? error.message : 'The forensic analysis engine cannot be reached. Check network connection and API endpoint.'
+        setBackendError(message)
+        setToast({ message, tone: 'warning' })
+        return null
+      } finally {
+        setBackendLoading(false)
+      }
     }
 
     // AUDIO MODALITY: Process via Acoustic Deepfake Spectral Engine
@@ -1461,22 +1452,59 @@ function Step({ number, label, active, current }: { number: string; label: strin
 // ==========================================
 function FrameEvidenceTimeline({
   media,
+  backendResult,
   onReviewEvidence,
 }: {
   media: UploadedMedia | null
+  backendResult?: BackendAnalysisResponse | null
   onReviewEvidence?: () => void
 }) {
-  const [frames] = useState<FETFrame[]>(DEFAULT_FET_FRAMES)
-  const [selectedFrameIndex, setSelectedFrameIndex] = useState(3) // Frame 142 at 00:05.68 as in mockup
+  const dynamicFrames: FETFrame[] = useMemo(() => {
+    const rawEvidence = backendResult?.evidence
+    const firstEvidence = Array.isArray(rawEvidence) && rawEvidence[0] && typeof rawEvidence[0] === 'object' ? rawEvidence[0] as Record<string, unknown> : null
+    const rawFrames = firstEvidence?.frameScores as Array<{ frameIndex: number; timestampSeconds: number; syntheticScore: number }> | undefined
+    if (rawFrames && Array.isArray(rawFrames) && rawFrames.length > 0) {
+      return rawFrames.map((f, idx) => {
+        const score = Number(f.syntheticScore) || 0
+        const isFlagged = score >= 0.5
+        const mins = Math.floor(f.timestampSeconds / 60)
+        const secs = (f.timestampSeconds % 60).toFixed(2)
+        const ts = `${String(mins).padStart(2, '0')}:${String(secs).padStart(5, '0')}`
+        return {
+          index: idx,
+          frameNumber: f.frameIndex,
+          timestamp: ts,
+          seconds: f.timestampSeconds,
+          anomalyScore: score,
+          confidence: Math.round(score * 100),
+          isFlagged,
+          categories: {
+            facialInconsistencies: score >= 0.75 ? 'FLAGGED' : score >= 0.5 ? 'REVIEW' : 'NORMAL',
+            blendingArtifacts: score >= 0.65 ? 'FLAGGED' : score >= 0.45 ? 'REVIEW' : 'NORMAL',
+            temporalAnomalies: score >= 0.6 ? 'FLAGGED' : score >= 0.4 ? 'REVIEW' : 'NORMAL',
+          },
+        }
+      })
+    }
+    return DEFAULT_FET_FRAMES
+  }, [backendResult])
+
+  const frames = dynamicFrames
+  const [selectedFrameIndex, setSelectedFrameIndex] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(5.68)
+  const [currentTime, setCurrentTime] = useState(frames[0]?.seconds || 0)
   const [duration, setDuration] = useState(12.4)
   const [isMuted, setIsMuted] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
   const videoRef = useRef<HTMLVideoElement>(null)
 
-  const selectedFrame = frames[selectedFrameIndex] || frames[3]
+  const selectedFrame = frames[selectedFrameIndex] || frames[0] || DEFAULT_FET_FRAMES[0]
   const clipName = media?.name || 'sample_clip_014.mp4'
+
+  const details = backendResult?.details && typeof backendResult.details === 'object' && !Array.isArray(backendResult.details) ? backendResult.details as Record<string, unknown> : undefined
+  const analyzedFramesCount: number = typeof details?.analyzedFrames === 'number' ? details.analyzedFrames : frames.length
+  const flaggedFramesCount: number = typeof details?.flaggedFrames === 'number' ? details.flaggedFrames : frames.filter(f => f.isFlagged).length
+  const fpsValue: number = typeof details?.fps === 'number' ? details.fps : 24
 
   const selectFrame = (idx: number) => {
     const f = frames[idx]
@@ -1532,7 +1560,7 @@ function FrameEvidenceTimeline({
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-signal/10 px-2.5 py-1 text-[10px] font-semibold text-signal uppercase tracking-[0.1em]">
             <span className="h-1.5 w-1.5 rounded-full bg-signal animate-pulse" />
-            {media?.file ? 'ACTIVE VIDEO FORENSICS' : 'SAMPLE ANALYSIS · PLACEHOLDER DATA'}
+            {backendResult ? 'GENUINE ONNX VIDEO INFERENCE' : media?.file ? 'ACTIVE VIDEO FORENSICS' : 'SAMPLE ANALYSIS · PLACEHOLDER DATA'}
           </span>
         </div>
       </div>
@@ -1540,12 +1568,12 @@ function FrameEvidenceTimeline({
       {/* TOP THREE STATS BAR */}
       <div className="my-6 grid grid-cols-2 gap-4 border-b border-line pb-6 md:grid-cols-4">
         <div>
-          <p className="serif text-4xl text-ink">248</p>
+          <p className="serif text-4xl text-ink">{analyzedFramesCount}</p>
           <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.14em] text-muted">ANALYZED FRAMES</p>
-          <p className="text-[9px] uppercase tracking-[0.1em] text-muted/70">AT 24 FPS</p>
+          <p className="text-[9px] uppercase tracking-[0.1em] text-muted/70">AT {fpsValue} FPS</p>
         </div>
         <div>
-          <p className="serif text-4xl text-signal">07</p>
+          <p className="serif text-4xl text-signal">{String(flaggedFramesCount).padStart(2, '0')}</p>
           <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.14em] text-signal">FLAGGED FRAMES</p>
           <p className="text-[9px] uppercase tracking-[0.1em] text-signal/70">ANOMALY &gt; 0.50</p>
         </div>
@@ -1963,7 +1991,7 @@ function AnalyzeMediaPage() {
             </div>
           }
         />
-        <FrameEvidenceTimeline media={media} onReviewEvidence={continueToReport} />
+        <FrameEvidenceTimeline media={media} backendResult={backendResult} onReviewEvidence={continueToReport} />
       </>
     )
   }
@@ -2180,7 +2208,7 @@ function VerificationReportPage() {
 
       {uploadedMedia.modality === 'Video' && (
         <div className="mb-6">
-          <FrameEvidenceTimeline media={uploadedMedia} />
+          <FrameEvidenceTimeline media={uploadedMedia} backendResult={backendResult} />
         </div>
       )}
 

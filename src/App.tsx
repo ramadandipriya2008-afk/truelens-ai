@@ -1462,7 +1462,7 @@ function FrameEvidenceTimeline({
   const dynamicFrames: FETFrame[] = useMemo(() => {
     const rawEvidence = backendResult?.evidence
     const firstEvidence = Array.isArray(rawEvidence) && rawEvidence[0] && typeof rawEvidence[0] === 'object' ? rawEvidence[0] as Record<string, unknown> : null
-    const rawFrames = firstEvidence?.frameScores as Array<{ frameIndex: number; timestampSeconds: number; syntheticScore: number }> | undefined
+    const rawFrames = firstEvidence?.frameScores as Array<{ frameIndex: number; timestampSeconds: number; syntheticScore: number; thumbnail?: string }> | undefined
     if (rawFrames && Array.isArray(rawFrames) && rawFrames.length > 0) {
       return rawFrames.map((f, idx) => {
         const score = Number(f.syntheticScore) || 0
@@ -1478,6 +1478,7 @@ function FrameEvidenceTimeline({
           anomalyScore: score,
           confidence: Math.round(score * 100),
           isFlagged,
+          thumbnail: f.thumbnail,
           categories: {
             facialInconsistencies: score >= 0.75 ? 'FLAGGED' : score >= 0.5 ? 'REVIEW' : 'NORMAL',
             blendingArtifacts: score >= 0.65 ? 'FLAGGED' : score >= 0.45 ? 'REVIEW' : 'NORMAL',
@@ -1496,7 +1497,68 @@ function FrameEvidenceTimeline({
   const [duration, setDuration] = useState(12.4)
   const [isMuted, setIsMuted] = useState(false)
   const [timelineZoom, setTimelineZoom] = useState(1)
+  const [clientThumbnails, setClientThumbnails] = useState<Record<number, string>>({})
   const videoRef = useRef<HTMLVideoElement>(null)
+
+  // Client-side HTML5 canvas frame extraction fallback if video URL is present and thumbnails are needed
+  useEffect(() => {
+    if (!media?.url || frames.length === 0) return
+
+    const needsFallback = frames.some(f => !f.thumbnail)
+    if (!needsFallback) return
+
+    let cancelled = false
+    const video = document.createElement('video')
+    video.crossOrigin = 'anonymous'
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'auto'
+    video.src = media.url
+
+    const canvas = document.createElement('canvas')
+    canvas.width = 160
+    canvas.height = 90
+    const ctx = canvas.getContext('2d')
+
+    const captureFrame = (idx: number) => {
+      if (cancelled || idx >= frames.length || !ctx) return
+      const targetSec = frames[idx].seconds
+      video.currentTime = targetSec
+
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked)
+        if (cancelled) return
+        try {
+          ctx.drawImage(video, 0, 0, 160, 90)
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
+          setClientThumbnails(prev => ({ ...prev, [idx]: dataUrl }))
+        } catch (err) {
+          console.warn('Canvas thumbnail capture error for frame', idx, err)
+        }
+        captureFrame(idx + 1)
+      }
+
+      video.addEventListener('seeked', onSeeked, { once: true })
+    }
+
+    const onLoaded = () => {
+      if (!cancelled) {
+        if (video.duration && video.duration > 0) {
+          setDuration(video.duration)
+        }
+        captureFrame(0)
+      }
+    }
+
+    video.addEventListener('loadedmetadata', onLoaded, { once: true })
+    video.load()
+
+    return () => {
+      cancelled = true
+      video.pause()
+      video.src = ''
+    }
+  }, [media?.url, frames])
 
   const selectedFrame = frames[selectedFrameIndex] || frames[0] || DEFAULT_FET_FRAMES[0]
   const clipName = media?.name || 'sample_clip_014.mp4'
@@ -1505,6 +1567,7 @@ function FrameEvidenceTimeline({
   const analyzedFramesCount: number = typeof details?.analyzedFrames === 'number' ? details.analyzedFrames : frames.length
   const flaggedFramesCount: number = typeof details?.flaggedFrames === 'number' ? details.flaggedFrames : frames.filter(f => f.isFlagged).length
   const fpsValue: number = typeof details?.fps === 'number' ? details.fps : 24
+  const totalFramesCount: number = typeof details?.totalFrames === 'number' ? details.totalFrames : (analyzedFramesCount || frames.length)
 
   const selectFrame = (idx: number) => {
     const f = frames[idx]
@@ -1707,7 +1770,7 @@ function FrameEvidenceTimeline({
           <div className="panel p-4 bg-white/90">
             <div className="mb-2 flex items-center justify-between text-xs">
               <span className="font-semibold text-ink">Frame timeline</span>
-              <span className="font-mono text-[10px] text-muted">24 fps · 298 frames</span>
+              <span className="font-mono text-[10px] text-muted">{fpsValue} fps · {totalFramesCount} frames ({frames.length} sampled)</span>
             </div>
 
             {/* MICRO TICK RULER */}
@@ -1720,43 +1783,55 @@ function FrameEvidenceTimeline({
               ))}
             </div>
 
-            {/* HORIZONTAL CAROUSEL OF 7 FRAME THUMBNAILS */}
-            <div className="mobile-scroll grid grid-cols-7 gap-2 pt-1">
+            {/* HORIZONTAL FILMSTRIP CAROUSEL OF REAL VIDEO FRAME THUMBNAILS */}
+            <div className="mobile-scroll flex gap-2.5 overflow-x-auto pb-2 pt-1">
               {frames.map((frame, idx) => {
                 const isSelected = selectedFrameIndex === idx
+                const thumbSrc = frame.thumbnail || clientThumbnails[idx] || (media?.url ? undefined : DEEPFAKE_ART)
                 return (
                   <button
                     key={frame.index}
                     onClick={() => selectFrame(idx)}
-                    className={`group relative flex flex-col items-center rounded-[2px] border p-1 text-left transition ${
+                    className={`group relative flex w-28 shrink-0 flex-col items-center rounded-[2px] border p-1.5 text-left transition ${
                       isSelected
                         ? 'border-signal bg-signal/5 ring-2 ring-signal shadow-sm'
                         : 'border-line hover:border-ink bg-white'
                     }`}
                   >
                     {frame.isFlagged && (
-                      <span className="absolute -top-1 right-1 h-1.5 w-1.5 rounded-full bg-signal" title="Flagged anomaly" />
+                      <span className="absolute -top-1.5 right-1 h-2.5 w-2.5 rounded-full bg-signal ring-2 ring-white shadow-xs" title="Flagged anomaly" />
                     )}
                     <div className="relative aspect-video w-full overflow-hidden rounded-[1px] bg-ink">
-                      <img
-                        src={DEEPFAKE_ART}
-                        alt={`Frame at ${frame.timestamp}`}
-                        className="h-full w-full object-cover transition group-hover:scale-105"
-                        style={{ filter: frame.isFlagged ? 'contrast(1.15) brightness(0.95)' : undefined }}
-                      />
+                      {thumbSrc ? (
+                        <img
+                          src={thumbSrc}
+                          alt={`Frame at ${frame.timestamp}`}
+                          className="h-full w-full object-cover transition group-hover:scale-105"
+                          style={{ filter: frame.isFlagged ? 'contrast(1.15) brightness(0.95)' : undefined }}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-stone-900 text-[9px] font-mono text-white/50">
+                          #{frame.frameNumber}
+                        </div>
+                      )}
                       {isSelected && (
                         <div className="absolute inset-0 border border-signal bg-signal/15" />
                       )}
                     </div>
-                    <span className="mt-1 font-mono text-[9px] text-muted">
-                      {frame.timestamp}
-                    </span>
+                    <div className="mt-1.5 flex w-full items-center justify-between font-mono text-[9px]">
+                      <span className="text-muted">{frame.timestamp}</span>
+                      <span className={`font-semibold ${frame.isFlagged ? 'text-signal' : 'text-stone-500'}`}>
+                        {frame.anomalyScore.toFixed(2)}
+                      </span>
+                    </div>
                     {isSelected ? (
-                      <span className="text-[8px] font-bold tracking-wider text-signal uppercase">
+                      <span className="mt-0.5 text-[8px] font-bold tracking-wider text-signal uppercase">
                         SELECTED
                       </span>
                     ) : (
-                      <span className="text-[8px] text-transparent select-none">·</span>
+                      <span className={`mt-0.5 text-[8px] font-medium tracking-wide uppercase ${frame.isFlagged ? 'text-signal' : 'text-muted/60'}`}>
+                        {frame.isFlagged ? 'FLAGGED' : 'PASS'}
+                      </span>
                     )}
                   </button>
                 )
@@ -1822,6 +1897,33 @@ function FrameEvidenceTimeline({
             <h3 className="serif mt-1 text-4xl font-bold tracking-tight text-ink">
               {selectedFrame.timestamp}
             </h3>
+
+            {/* REAL SELECTED FRAME PREVIEW CARD */}
+            <div className="relative mt-3 aspect-video w-full overflow-hidden rounded-[2px] border border-line bg-ink shadow-sm">
+              {selectedFrame.thumbnail || clientThumbnails[selectedFrameIndex] || (media?.url ? undefined : DEEPFAKE_ART) ? (
+                <img
+                  src={selectedFrame.thumbnail || clientThumbnails[selectedFrameIndex] || (media?.url ? undefined : DEEPFAKE_ART)}
+                  alt={`Selected frame ${selectedFrame.frameNumber}`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-xs font-mono text-white/50">
+                  Frame #{selectedFrame.frameNumber} ({selectedFrame.timestamp})
+                </div>
+              )}
+              <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/75 px-2 py-0.5 font-mono text-[10px] text-white">
+                {selectedFrame.timestamp} · Frame #{selectedFrame.frameNumber}
+              </div>
+              {selectedFrame.isFlagged ? (
+                <div className="pointer-events-none absolute top-2 right-2 rounded bg-signal px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+                  FLAGGED ANOMALY
+                </div>
+              ) : (
+                <div className="pointer-events-none absolute top-2 right-2 rounded bg-emerald-600/90 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+                  NORMAL
+                </div>
+              )}
+            </div>
 
             {/* TWO TILES: ANOMALY SCORE & CONFIDENCE */}
             <div className="mt-5 grid grid-cols-2 gap-3">

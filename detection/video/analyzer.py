@@ -1,4 +1,4 @@
-import cv2, math, time, logging
+import cv2, math, time, logging, base64
 from PIL import Image
 
 log = logging.getLogger('trustlens.video')
@@ -8,7 +8,8 @@ def analyze_video(path, detector, max_seconds=120, max_frames=12):
     Genuine frame-level synthetic media signal analyzer using CIFAKE EfficientNet-B0 ONNX.
     
     Extracts frames at controlled intervals, runs ONNX inference on each frame,
-    and aggregates scores using a weighted hybrid method (70% mean, 30% peak anomaly).
+    generates lightweight JPEG thumbnails for the UI timeline, and aggregates scores
+    using a weighted hybrid method (70% mean, 30% peak anomaly).
     """
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -37,11 +38,20 @@ def analyze_video(path, detector, max_seconds=120, max_frames=12):
             if ok and frame is not None and frame.size > 0:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 score, _ = detector.predict(Image.fromarray(rgb))
+
+                try:
+                    thumb = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
+                    _, buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf).decode('ascii')
+                except Exception:
+                    thumb_b64 = None
+
                 frames.append({
                     'frameIndex': int(n),
                     'timestampSeconds': round(n / fps, 3),
                     'syntheticScore': round(float(score), 4),
-                    'isFlagged': bool(score >= 0.5)
+                    'isFlagged': bool(score >= 0.5),
+                    'thumbnail': thumb_b64,
                 })
 
         if not frames:

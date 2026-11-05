@@ -23,13 +23,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
+    allow_origins=[
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'https://trustlensai-beta.vercel.app',
+    ],
     allow_credentials=True,
     allow_methods=['GET', 'POST', 'OPTIONS'],
     allow_headers=['*'],
     expose_headers=['*'],
 )
-
 @app.on_event('startup')
 def initialize():
     app.state.image_detector = ImageDetector(s.model_onnx_path)

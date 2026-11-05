@@ -177,8 +177,26 @@ async def analyze_video(file: UploadFile = File(...)):
             log.exception('Video analysis failed')
             raise HTTPException(400, f'Video analysis failed: {exc}')
 
-        assessment = 'suspicious_synthetic_signals_detected' if aggregate_score >= 0.5 else 'no_strong_synthetic_signals_detected'
-        risk_band = 'high' if aggregate_score >= 0.8 else 'moderate' if aggregate_score >= 0.5 else 'low'
+        score_std = meta.get('scoreStd', 0.0)
+        high_variance = meta.get('highTemporalVariance', False)
+        flagged_count = meta.get('flaggedFrames', 0)
+        analyzed_count = meta.get('analyzedFrames', 1)
+        flagged_ratio = flagged_count / max(analyzed_count, 1)
+
+        # Scientific classification and false confidence prevention:
+        # CIFAKE EfficientNet-B0 is an image baseline evaluated across sampled keyframes.
+        # It has NOT been validated on real-world compressed video deepfake benchmarks.
+        # Codec compression (H.264), motion blur, and temporal instability induce severe
+        # out-of-distribution domain shift.
+        if high_variance or (aggregate_score >= 0.5 and flagged_ratio < 0.9):
+            assessment = 'inconclusive'
+            risk_band = 'unknown'
+        elif aggregate_score >= 0.85 and flagged_ratio >= 0.9:
+            assessment = 'inconclusive'
+            risk_band = 'moderate'
+        else:
+            assessment = 'no_strong_synthetic_signals_detected'
+            risk_band = 'low'
 
         return AnalysisResponse(
             analysisId=str(uuid.uuid4()),
@@ -191,28 +209,36 @@ async def analyze_video(file: UploadFile = File(...)):
             riskBand=risk_band,
             modelScore=aggregate_score,
             confidence=None,
-            confidenceMethod='Not calibrated; model score represents aggregated frame-level synthetic class probabilities',
+            confidenceMethod='Uncalibrated class probability. CIFAKE EfficientNet-B0 is an image-domain research baseline evaluated across keyframes and has not been validated on real-world compressed video deepfakes.',
             evidence=[
                 {
                     'type': 'video_frame_level_analysis',
                     'analyzedFrames': meta['analyzedFrames'],
                     'durationSeconds': meta['durationSeconds'],
                     'flaggedFrames': meta['flaggedFrames'],
+                    'stationaryFrames': meta.get('stationaryFrames', 0),
                     'syntheticScore': aggregate_score,
+                    'medianScore': meta.get('medianScore', aggregate_score),
+                    'trimmedMeanScore': meta.get('trimmedMeanScore', aggregate_score),
+                    'scoreStd': meta.get('scoreStd', 0.0),
+                    'highTemporalVariance': high_variance,
                     'frameScores': frames,
                 }
             ],
             details=meta,
             limitations=[
-                'CIFAKE EfficientNet-B0 is a single-frame image classifier applied across sampled video keyframes, not a temporal deepfake detector.',
-                'Frame-level aggregation does not evaluate temporal coherence, inter-frame warping, lip-sync, or video compression artifacts.',
-                'Aggregated synthetic signals indicate frame-level classifier responses and must not be interpreted as definitive proof of video manipulation or authenticity.',
+                'CIFAKE EfficientNet-B0 is a single-frame 2D image classifier applied across sampled video keyframes, not an independently validated video deepfake detector.',
+                'The model was trained exclusively on 32x32 CIFAR-10 real photographs and Stable Diffusion v1.4 synthetic images.',
+                'Video compression (H.264/H.265/VP9), chroma subsampling (4:2:0), and motion blur alter high-frequency spatial spectra, frequently triggering false-positive synthetic signals on genuine smartphone footage.',
+                'Frame-level aggregation evaluates independent 2D spatial features and does not measure temporal coherence, inter-frame warping, lip-sync, or facial landmark continuity.',
+                'Confidence is uncalibrated. Output represents preliminary research telemetry and must not be used as definitive proof of authenticity or manipulation.',
             ],
             warnings=[
+                'High temporal variance across frames indicates model instability and out-of-distribution domain shift.' if high_variance else 'Video evaluated on uncalibrated image-domain model.',
                 'Does not evaluate video veracity, source provenance, speaker identity, or depicted context.',
             ],
             model={
-                'name': 'CIFAKE EfficientNet-B0 Frame Analyzer',
+                'name': 'CIFAKE EfficientNet-B0 Frame Analyzer (Research Baseline)',
                 'version': det.metadata.get('version'),
                 'checkpointVerified': True,
                 'device': det.device,

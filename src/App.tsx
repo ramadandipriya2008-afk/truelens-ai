@@ -26,6 +26,7 @@ import {
 
 function assessmentToStatus(value: string | null | undefined): AnalysisStatus {
   const normalized = String(value || '').toLowerCase()
+  if (normalized.includes('inconclusive') || normalized.includes('unknown') || normalized.includes('unvalidated') || normalized.includes('not_validated') || normalized.includes('domain_mismatch')) return 'Inconclusive'
   if (normalized.includes('suspicious') || normalized.includes('high') || normalized.includes('risk') || normalized.includes('fake')) return 'Suspicious'
   if (normalized.includes('authentic') || normalized.includes('low') || normalized.includes('safe') || normalized.includes('genuine') || normalized.includes('no_strong_synthetic')) return 'Authentic'
   return 'Inconclusive'
@@ -1621,9 +1622,13 @@ function FrameEvidenceTimeline({
           FORENSICS / EVIDENCE REVIEW
         </div>
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-signal/10 px-2.5 py-1 text-[10px] font-semibold text-signal uppercase tracking-[0.1em]">
-            <span className="h-1.5 w-1.5 rounded-full bg-signal animate-pulse" />
-            {backendResult ? 'GENUINE ONNX VIDEO INFERENCE' : media?.file ? 'ACTIVE VIDEO FORENSICS' : 'SAMPLE ANALYSIS · PLACEHOLDER DATA'}
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] ${
+            backendResult?.assessment === 'inconclusive'
+              ? 'bg-stone-100 text-stone-700 border border-stone-200'
+              : 'bg-signal/10 text-signal'
+          }`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${backendResult?.assessment === 'inconclusive' ? 'bg-stone-500' : 'bg-signal animate-pulse'}`} />
+            {backendResult ? (backendResult.assessment === 'inconclusive' ? 'FRAME-LEVEL TELEMETRY · INCONCLUSIVE VIDEO DOMAIN' : 'GENUINE ONNX VIDEO INFERENCE') : media?.file ? 'ACTIVE VIDEO FORENSICS' : 'SAMPLE ANALYSIS · PLACEHOLDER DATA'}
           </span>
         </div>
       </div>
@@ -2319,15 +2324,24 @@ function VerificationReportPage() {
           <div className="panel p-5 md:p-6">
             <SectionHeader eyebrow="Authenticity assessment" title="Assessment signal" action={<span className="chip">{uploadedMedia.modality} verification</span>} />
             <div className="flex flex-col sm:flex-row items-center gap-6">
-              <div className="ring h-36 w-36 shrink-0" style={{ background: typeof scorePercent === 'number' ? `conic-gradient(#c92c35 0 ${Math.max(0, Math.min(100, scorePercent))}%, #dedad4 ${Math.max(0, Math.min(100, scorePercent))}% 100%)` : '#dedad4' }}>
+              <div
+                className="ring h-36 w-36 shrink-0"
+                style={{
+                  background: typeof scorePercent === 'number'
+                    ? `conic-gradient(${reportStatus === 'Suspicious' ? '#c92c35' : reportStatus === 'Authentic' ? '#059669' : '#78716c'} 0 ${Math.max(0, Math.min(100, scorePercent))}%, #dedad4 ${Math.max(0, Math.min(100, scorePercent))}% 100%)`
+                    : '#dedad4',
+                }}
+              >
                 <div className="flex h-full w-full flex-col items-center justify-center">
                   <span className="serif text-4xl">{scorePercent === null ? '—' : `${scorePercent}%`}</span>
-                  <span className="mt-1 text-[9px] uppercase tracking-[0.14em] text-muted">Synthetic score</span>
+                  <span className="mt-1 text-[9px] uppercase tracking-[0.14em] text-muted">
+                    {uploadedMedia.modality === 'Video' ? 'Model score' : 'Synthetic score'}
+                  </span>
                 </div>
               </div>
               <div className="space-y-3 text-xs w-full">
                 <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-signal" />
+                  <span className={`h-2 w-2 rounded-full ${reportStatus === 'Suspicious' ? 'bg-signal' : reportStatus === 'Authentic' ? 'bg-emerald-600' : 'bg-stone-500'}`} />
                   <span className="text-muted">Assessment</span>
                   <strong className="ml-auto font-mono text-[11px]">{backendValue(backendResult.assessment)}</strong>
                 </div>
@@ -2337,9 +2351,16 @@ function VerificationReportPage() {
                   <strong className="ml-auto uppercase tracking-wider">{backendValue(backendResult.riskBand)}</strong>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-stone-300" />
-                  <span className="text-muted">Synthetic score</span>
+                  <span className="h-2 w-2 rounded-full bg-stone-400" />
+                  <span className="text-muted">{uploadedMedia.modality === 'Video' ? 'Raw model score (uncalibrated)' : 'Synthetic score'}</span>
                   <strong className="ml-auto">{rawScore !== null ? `${rawScore} (${scorePercent}%)` : 'Unavailable'}</strong>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-blue-500" />
+                  <span className="text-muted">Calibrated confidence</span>
+                  <strong className="ml-auto font-mono text-[11px] text-muted">
+                    {backendResult.confidence != null ? `${backendResult.confidence}%` : 'Uncalibrated (Not Validated for Video)'}
+                  </strong>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-emerald-600" />
